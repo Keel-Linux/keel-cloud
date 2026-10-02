@@ -50,6 +50,7 @@ class Overlay:
     interface: str
     addresses: list
     listen_port: int
+    networks: tuple = ()
 
 
 def load(path: str) -> dict:
@@ -103,19 +104,27 @@ def cloud_settings(doc: dict) -> CloudSettings:
 
 
 def read_secret(path: str, owner: int = 0) -> str:
-    """A secret file's content; it must be `owner`'s and mode 0600"""
+    """A secret file's content; it must be `owner`'s and mode 0600
+
+    Opened first and checked on the open descriptor, never through a
+    symbolic link, so what is checked is what is read.
+    """
     try:
-        info = os.stat(path)
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW |
+                             os.O_NONBLOCK)
+    except OSError as failure:
+        raise NodeError(f"{path}: {failure.strerror}") from failure
+    try:
+        info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode):
             raise NodeError(f"{path}: not a regular file")
         if info.st_uid != owner or info.st_mode & 0o077:
             raise NodeError(f"{path}: must be root's and mode 0600")
-        with open(path, encoding="ascii") as stream:
-            value = stream.read().strip()
-    except OSError as failure:
-        raise NodeError(f"{path}: {failure.strerror}") from failure
+        value = os.read(descriptor, 4096).decode("ascii").strip()
     except UnicodeDecodeError as failure:
         raise NodeError(f"{path}: not ASCII text") from failure
+    finally:
+        os.close(descriptor)
     if not value:
         raise NodeError(f"{path}: empty")
     return value
@@ -130,7 +139,7 @@ def overlay(doc: dict) -> Overlay:
         raise NodeError("network.overlay.wireguard.address: Keel Cloud"
                         " exchanges the overlay's keys, so the spec declares"
                         " the overlay first")
-    addresses = []
+    addresses, networks = [], []
     for key in ("address", "ipv4_address"):
         if wireguard.get(key) is not None:
             try:
@@ -139,13 +148,29 @@ def overlay(doc: dict) -> Overlay:
                 raise NodeError(f"network.overlay.wireguard.{key}:"
                                 f" {failure}") from failure
             addresses.append(str(interface.ip))
+            networks.append(interface.network)
     return Overlay(str(wireguard.get("interface", "wg0")), addresses,
-                   int(wireguard.get("listen_port", DEFAULT_PORT)))
+                   int(wireguard.get("listen_port", DEFAULT_PORT)),
+                   tuple(networks))
 
 
 def peers_of(doc: dict) -> list:
     wireguard = doc["network"]["overlay"]["wireguard"]
     return list(wireguard.get("peers") or [])
+
+
+def peer_keys(doc: dict) -> set:
+    return {peer.get("public_key") for peer in peers_of(doc)
+            if isinstance(peer, dict)}
+
+
+def without_peer(doc: dict, key: str) -> dict:
+    """A copy of the spec without the peer of `key`"""
+    result = copy.deepcopy(doc)
+    result["network"]["overlay"]["wireguard"]["peers"] = [
+        peer for peer in peers_of(result)
+        if not (isinstance(peer, dict) and peer.get("public_key") == key)]
+    return result
 
 
 def with_peers(doc: dict, managed: dict) -> dict:
@@ -172,18 +197,25 @@ def dump(doc: dict) -> str:
 def write(path: str, doc: dict, validate) -> None:
     """Write the spec whole, after `validate` accepts the new file
 
-    The new spec goes to a file beside the old one, with its mode, is
-    handed to `validate` (keel spec validate), and only then replaces
-    it, so a spec keel would refuse never takes the old one's place.
+    The new spec goes to a file beside the old one, with its mode, owner
+    and group, is handed to `validate` (keel spec validate), and only then
+    replaces it, so a spec keel would refuse never takes the old one's
+    place.
     """
     directory = os.path.dirname(os.path.abspath(path))
     temporary = os.path.join(directory, f".{os.path.basename(path)}.cloud")
-    mode = stat.S_IMODE(os.stat(path).st_mode)
-    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
-                         mode)
+    info = os.stat(path)
+    mode = stat.S_IMODE(info.st_mode)
+    if os.path.lexists(temporary):
+        os.unlink(temporary)
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                         os.O_NOFOLLOW, mode)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             stream.write(dump(doc))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chown(temporary, info.st_uid, info.st_gid)
         os.chmod(temporary, mode)
         errors = validate(temporary)
         if errors:

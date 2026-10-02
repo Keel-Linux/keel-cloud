@@ -5,7 +5,7 @@
 # and only its hash is stored. Run as root in a throwaway container (CI).
 set -euo pipefail
 
-dir=$1
+dir=$(realpath "$1")   # apt reads a bare relative path as a package name
 fail() { echo "package-smoke: $*" >&2; exit 1; }
 
 apt-get install -y -qq --no-install-recommends procps iproute2 curl \
@@ -46,5 +46,9 @@ if grep -rqF -e "${enroll#kc1e_}" /var/lib/keel-cloud; then
 fi
 [ "$(stat -c %U /var/lib/keel-cloud/cloud.db)" = keel-cloud ] \
     || fail "the database is not the service's"
+
+apt-get purge -y -qq keel-cloud-api
+[ ! -e /var/lib/keel-cloud ] || fail "purge left the state"
+[ ! -e /etc/keel-cloud/tls/key.pem ] || fail "purge left the made key"
 
 echo "package-smoke: keel-cloud-api runs as keel-cloud on [::]:8443, TLS only"

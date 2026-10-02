@@ -26,14 +26,13 @@ revoke a key.
 .B set list \fIACCOUNT\fR
 the account's sets.
 .TP
-.B set auto-admit \fIACCOUNT\fR \fISET\fR on|off
-admit new peers without the operator's confirmation, or stop.
+.B set auto-admit \fIACCOUNT\fR \fISET\fR off
+stop admitting new peers on their record proof alone. Turning it on, and
+confirming a node, need the set's entry secret, so they are done on a
+node of the set with \fBkeel cloud\fR.
 .TP
 .B peer list \fIACCOUNT\fR \fISET\fR
 the set's nodes and their state.
-.TP
-.B peer confirm \fIACCOUNT\fR \fISET\fR \fIPUBLIC_KEY\fR
-admit a pending node.
 .TP
 .B peer remove \fIACCOUNT\fR \fISET\fR \fIPUBLIC_KEY\fR
 forget a node; nodes that admitted it keep it until their operator

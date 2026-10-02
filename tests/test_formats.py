@@ -52,6 +52,22 @@ def test_public_keys_have_the_shape_wg_prints():
     assert public_key_error(None) is not None
 
 
+@pytest.mark.parametrize("field,value", [
+    ("public_key", wg_key() + "\n"), ("set", "shop\n"),
+    ("endpoint", "a.example.org\n:51820"), ("site", "a\n")])
+def test_a_trailing_newline_is_not_the_same_value(field, value):
+    """Otherwise one key could be pinned twice under two spellings"""
+    assert validate_record(make_record(**{field: value}))
+
+
+def test_scopes_and_non_ascii_digits_are_refused():
+    assert overlay_errors(["fd00::1%eth0"])
+    assert endpoint_error("[fe80::1%eth0]:51820") is not None
+    assert endpoint_error("host:²") is not None
+    assert keys.key_scope(keys.new_key(keys.ENROLL) + "\n") is None
+    assert proof.proof_error("a" * 64 + "\n") is not None
+
+
 @pytest.mark.parametrize("value", [
     None, "[2001:db8::1]:51820", "192.0.2.1:51820", "node.example.org:1"])
 def test_good_endpoints(value):
@@ -107,12 +123,38 @@ def test_the_proof_covers_every_field(secret, field, value):
     assert not proof.verify_proof(secret, {**record, field: value}, made)
 
 
+def test_confirmation_covers_set_key_and_addresses_only(secret):
+    record = make_record()
+    made = proof.make_confirmation(secret, record)
+    assert proof.verify_confirmation(secret, {**record, "ts": 1,
+                                              "endpoint": None}, made)
+    for field, value in (("set", "other"), ("public_key", wg_key()),
+                         ("overlay", ["fd00::9"])):
+        assert not proof.verify_confirmation(secret,
+                                             {**record, field: value}, made)
+
+
+def test_the_three_proofs_never_stand_for_each_other(secret):
+    record = make_record()
+    record_proof = proof.make_proof(secret, record)
+    confirmation = proof.make_confirmation(secret, record)
+    auto = proof.make_auto_admit(secret, "shop")
+    assert len({record_proof, confirmation, auto}) == 3
+    assert not proof.verify_confirmation(secret, record, record_proof)
+    assert not proof.verify_proof(secret, record, confirmation)
+    assert proof.verify_auto_admit(secret, "shop", auto)
+    assert not proof.verify_auto_admit(secret, "other", auto)
+    assert not proof.verify_auto_admit(secret, "shop", confirmation)
+
+
 def test_entry_secrets_are_long_and_checked():
     value = proof.new_entry_secret()
     assert len(value) >= proof.MIN_SECRET_LENGTH
     assert proof.parse_entry_secret(f"  {value}\n") == value.encode()
     with pytest.raises(ValueError):
         proof.parse_entry_secret("short")
+    with pytest.raises(ValueError):
+        proof.parse_entry_secret("x" * 42)
     with pytest.raises(ValueError):
         proof.parse_entry_secret("x" * 40 + " y")
 

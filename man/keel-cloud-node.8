@@ -30,7 +30,14 @@ register this node, or bring its record up to date.
 admit what the set proposes and write the pinned peers into the spec.
 .TP
 .B confirm \fIPUBLIC_KEY\fR \fB\-\-account\-key\-file\fR \fIFILE\fR
-admit a pending node, with the account key.
+admit a pending node: a confirmation made here with the entry secret,
+sent with the account key; every node checks it.
+.TP
+.B auto-admit on|off \fB\-\-account\-key\-file\fR \fIFILE\fR
+let the set admit new nodes on their record proof alone, or stop.
+.TP
+.B forget \fIPUBLIC_KEY\fR
+remove a peer from this node for good; Keel Cloud cannot bring it back.
 .TP
 .B status
 the set as Keel Cloud and this node see it.

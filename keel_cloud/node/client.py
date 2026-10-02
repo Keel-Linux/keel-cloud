@@ -11,12 +11,22 @@ from keel_cloud import __version__
 
 TIMEOUT = 30
 LONG_POLL_MARGIN = 15
+# 256 nodes of about 1 KiB each, with room to spare
+MAX_ANSWER = 1024 * 1024
 
 
 class CloudError(Exception):
     def __init__(self, status: int | None, message: str):
         super().__init__(message)
         self.status = status
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """The API never redirects; following one would carry the key away"""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise CloudError(code, f"the service redirected to {newurl};"
+                         " refused, the key is not sent elsewhere")
 
 
 class Client:
@@ -28,7 +38,7 @@ class Client:
             context = ssl.create_default_context(cafile=ca_file)
             context.minimum_version = ssl.TLSVersion.TLSv1_2
             opener = urllib.request.build_opener(
-                urllib.request.HTTPSHandler(context=context))
+                urllib.request.HTTPSHandler(context=context), NoRedirect())
         self.opener = opener
 
     def call(self, method: str, path: str, body: dict | None = None,
@@ -41,7 +51,11 @@ class Client:
                      "User-Agent": f"keel-cloud-node/{__version__}"})
         try:
             with self.opener.open(request, timeout=timeout) as response:
-                return json.loads(response.read() or b"{}")
+                body = response.read(MAX_ANSWER + 1)
+                if len(body) > MAX_ANSWER:
+                    raise CloudError(None, f"{self.endpoint}: an answer of"
+                                     f" more than {MAX_ANSWER} bytes")
+                return json.loads(body or b"{}")
         except urllib.error.HTTPError as failure:
             raise CloudError(failure.code, _message(failure)) from failure
         except (urllib.error.URLError, OSError, ValueError) as failure:
@@ -56,9 +70,16 @@ class Client:
         return self.call("GET", f"/v1/sets/{set_name}/peers?since={since}"
                          f"&wait={wait}", timeout=wait + LONG_POLL_MARGIN)
 
-    def confirm(self, set_name: str, public_key: str) -> dict:
+    def confirm(self, set_name: str, public_key: str,
+                confirmation: str) -> dict:
         return self.call("POST", f"/v1/sets/{set_name}/peers/confirm",
-                         {"public_key": public_key})
+                         {"public_key": public_key,
+                          "confirmation": confirmation})
+
+    def auto_admit(self, set_name: str, proof: str | None) -> dict:
+        body = {"auto_admit": False} if proof is None else \
+            {"auto_admit": True, "proof": proof}
+        return self.call("PATCH", f"/v1/sets/{set_name}", body)
 
 
 def _message(failure: urllib.error.HTTPError) -> str:

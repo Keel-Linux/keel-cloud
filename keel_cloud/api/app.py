@@ -9,14 +9,18 @@ to the control channel); Keel Cloud never connects to a node.
     POST  /v1/keys                       account key: a new key, enrollment
                                          by default
     GET   /v1/sets                       account key: the account's sets
-    PATCH /v1/sets/{set}                 account key: automatic admission
+    PATCH /v1/sets/{set}                 account key: automatic admission,
+                                         on with its proof, or off
     POST  /v1/sets/{set}/peers           either key: register or update a
                                          node's record, with its proof
     GET   /v1/sets/{set}/peers           either key: the set's nodes;
                                          ?since=REVISION&wait=SECONDS is a
                                          long poll
-    POST  /v1/sets/{set}/peers/confirm   account key: admit a pending node
+    POST  /v1/sets/{set}/peers/confirm   account key: admit a pending node,
+                                         with a confirmation proof
 
+The proofs are made on nodes with the set's entry secret; the service
+checks their shape and relays them, and every node checks their value.
 Errors are JSON, {"error": "..."}, and never say whether a key exists.
 """
 
@@ -90,7 +94,7 @@ def set_name(request: web.Request) -> str:
 
 def query_int(request: web.Request, name: str, top: int) -> int:
     raw = request.query.get(name, "0")
-    if not raw.isdigit() or int(raw) > top:
+    if not (raw.isascii() and raw.isdigit()) or int(raw) > top:
         raise ApiError(400, f"{name}: an integer from 0 to {top}")
     return int(raw)
 
@@ -118,11 +122,17 @@ async def patch_set(request: web.Request) -> web.Response:
     who = principal(request, ACCOUNT)
     name = set_name(request)
     data = await json_body(request)
-    value = data.get("auto_admit")
-    if set(data) != {"auto_admit"} or not isinstance(value, bool):
-        raise ApiError(400, 'the body is {"auto_admit": true or false}')
-    revision = request.app[STORE].set_auto_admit(who.account_id, name, value)
-    return web.json_response({"set": name, "auto_admit": value,
+    if data == {"auto_admit": False}:
+        proof = None
+    elif set(data) == {"auto_admit", "proof"} and data["auto_admit"] is True \
+            and not proof_error(data["proof"]):
+        proof = data["proof"]
+    else:
+        raise ApiError(400, 'the body is {"auto_admit": false}, or'
+                       ' {"auto_admit": true, "proof": ...} made on a node of'
+                       " the set")
+    revision = request.app[STORE].set_auto_admit(who.account_id, name, proof)
+    return web.json_response({"set": name, "auto_admit": proof is not None,
                               "revision": revision})
 
 
@@ -151,12 +161,14 @@ async def register(request: web.Request) -> web.Response:
 
 
 def listing(view) -> dict:
+    """The set as the service holds it; each node decides what it admits"""
     nodes = [{"record": node["record"], "proof": node["proof"],
               "status": node["status"],
-              "admitted": node["status"] == CONFIRMED or view.auto_admit}
+              "confirmation": node["confirmation"]}
              for node in view.nodes]
     return {"set": view.name, "revision": view.revision,
-            "auto_admit": view.auto_admit, "nodes": nodes}
+            "auto_admit": view.auto_admit is not None,
+            "auto_admit_proof": view.auto_admit, "nodes": nodes}
 
 
 async def peers(request: web.Request) -> web.Response:
@@ -174,15 +186,18 @@ async def peers(request: web.Request) -> web.Response:
 
 
 async def confirm(request: web.Request) -> web.Response:
-    """The operator admits a node: an account key, never a node's key"""
+    """The operator admits a node: an account key, never a node's key,
+    and a confirmation made on a node of the set, which nodes check"""
     who = principal(request, ACCOUNT)
     name = set_name(request)
     data = await json_body(request)
     key = data.get("public_key")
-    if set(data) != {"public_key"} or public_key_error(key):
-        raise ApiError(400, 'the body is {"public_key": KEY}, a WireGuard'
-                       " public key")
-    revision = request.app[STORE].confirm(who.account_id, name, key)
+    if set(data) != {"public_key", "confirmation"} or public_key_error(key) \
+            or proof_error(data["confirmation"]):
+        raise ApiError(400, 'the body is {"public_key": KEY, "confirmation":'
+                       " PROOF}, the proof made on a node of the set")
+    revision = request.app[STORE].confirm(who.account_id, name, key,
+                                          data["confirmation"])
     return web.json_response({"set": name, "public_key": key,
                               "status": CONFIRMED, "revision": revision})
 

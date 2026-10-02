@@ -70,9 +70,10 @@ async def test_a_node_enrolls_and_lists_its_set(api, keys, proven):
     listing = await (await api.get("/v1/sets/shop/peers",
                                    headers=auth(keys["enroll"]))).json()
     assert listing["revision"] == 1 and not listing["auto_admit"]
+    assert listing["auto_admit_proof"] is None
     node = listing["nodes"][0]
     assert node == {"record": record, "proof": proof, "status": "pending",
-                    "admitted": False}
+                    "confirmation": None}
 
 
 async def test_an_update_answers_200(api, keys, proven):
@@ -150,56 +151,78 @@ async def test_the_enrollment_key_cannot_manage_or_confirm(api, keys,
     calls = [api.post("/v1/keys", headers=auth(keys["enroll"]), json={}),
              api.get("/v1/sets", headers=auth(keys["enroll"])),
              api.patch("/v1/sets/shop", headers=auth(keys["enroll"]),
-                       json={"auto_admit": True}),
+                       json={"auto_admit": False}),
              api.post("/v1/sets/shop/peers/confirm",
                       headers=auth(keys["enroll"]),
-                      json={"public_key": record["public_key"]})]
+                      json={"public_key": record["public_key"],
+                            "confirmation": "c" * 64})]
     for call in calls:
         assert (await call).status == 403
+
+
+async def confirm(api, key, public_key, confirmation="c" * 64):
+    return await api.post("/v1/sets/shop/peers/confirm", headers=auth(key),
+                          json={"public_key": public_key,
+                                "confirmation": confirmation})
 
 
 async def test_the_operator_confirms_with_the_account_key(api, keys, proven):
     record, proof = proven()
     await enroll(api, keys["enroll"], record, proof)
-    response = await api.post("/v1/sets/shop/peers/confirm",
-                              headers=auth(keys["account"]),
-                              json={"public_key": record["public_key"]})
+    response = await confirm(api, keys["account"], record["public_key"])
     assert response.status == 200
     assert (await response.json())["status"] == "confirmed"
     listing = await (await api.get("/v1/sets/shop/peers",
                                    headers=auth(keys["enroll"]))).json()
-    assert listing["nodes"][0]["admitted"]
+    assert listing["nodes"][0]["confirmation"] == "c" * 64
 
 
 async def test_confirm_checks_its_body_and_the_node(api, keys, proven):
     record, proof = proven()
     await enroll(api, keys["enroll"], record, proof)
+    for public_key, confirmation in (("x", "c" * 64),
+                                     (record["public_key"], "nope")):
+        response = await confirm(api, keys["account"], public_key,
+                                 confirmation)
+        assert response.status == 400
     response = await api.post("/v1/sets/shop/peers/confirm",
                               headers=auth(keys["account"]),
-                              json={"public_key": "x"})
+                              json={"public_key": record["public_key"]})
     assert response.status == 400
-    response = await api.post("/v1/sets/shop/peers/confirm",
-                              headers=auth(keys["account"]),
-                              json={"public_key": proven()[0]["public_key"]})
+    response = await confirm(api, keys["account"],
+                             proven()[0]["public_key"])
     assert response.status == 404
 
 
-async def test_auto_admit_is_a_per_set_choice(api, keys, proven):
+@pytest.mark.parametrize("body", [
+    {"auto_admit": "yes"}, {"auto_admit": True},
+    {"auto_admit": True, "proof": "nope"},
+    {"auto_admit": False, "proof": "d" * 64}])
+async def test_auto_admit_on_needs_a_proof(api, keys, proven, body):
     record, proof = proven()
     await enroll(api, keys["enroll"], record, proof)
-    bad = await api.patch("/v1/sets/shop", headers=auth(keys["account"]),
-                          json={"auto_admit": "yes"})
-    assert bad.status == 400
+    response = await api.patch("/v1/sets/shop",
+                               headers=auth(keys["account"]), json=body)
+    assert response.status == 400
+
+
+async def test_auto_admit_is_relayed_with_its_proof(api, keys, proven):
+    record, proof = proven()
+    await enroll(api, keys["enroll"], record, proof)
     response = await api.patch("/v1/sets/shop",
                                headers=auth(keys["account"]),
-                               json={"auto_admit": True})
+                               json={"auto_admit": True, "proof": "d" * 64})
     assert (await response.json())["auto_admit"] is True
     listing = await (await api.get("/v1/sets",
                                    headers=auth(keys["account"]))).json()
     assert listing["sets"][0]["auto_admit"] is True
     peers = await (await api.get("/v1/sets/shop/peers",
                                  headers=auth(keys["enroll"]))).json()
-    assert peers["nodes"][0]["admitted"]
+    assert peers["auto_admit_proof"] == "d" * 64
+    response = await api.patch("/v1/sets/shop",
+                               headers=auth(keys["account"]),
+                               json={"auto_admit": False})
+    assert (await response.json())["auto_admit"] is False
 
 
 async def test_the_account_key_makes_enrollment_keys(api, keys, store):
@@ -217,9 +240,7 @@ async def test_long_poll_returns_when_the_set_changes(api, keys, proven):
         "/v1/sets/shop/peers?since=1&wait=5", headers=auth(keys["enroll"])))
     await asyncio.sleep(0.05)
     assert not poll.done()
-    await api.post("/v1/sets/shop/peers/confirm",
-                   headers=auth(keys["account"]),
-                   json={"public_key": record["public_key"]})
+    await confirm(api, keys["account"], record["public_key"])
     listing = await (await asyncio.wait_for(poll, 2)).json()
     assert listing["revision"] == 2
 
@@ -232,7 +253,8 @@ async def test_long_poll_times_out_with_the_same_listing(api, keys, proven):
     assert (await response.json())["revision"] == 1
 
 
-@pytest.mark.parametrize("query", ["since=-1", "wait=56", "wait=x"])
+@pytest.mark.parametrize("query", ["since=-1", "wait=56", "wait=x",
+                                   "since=\u00b2"])
 async def test_long_poll_parameters_are_bounded(api, keys, proven, query):
     record, proof = proven()
     await enroll(api, keys["enroll"], record, proof)

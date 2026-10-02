@@ -2,13 +2,14 @@
 """keel-cloud-node's command line, and the client's error handling"""
 
 import io
+import json
 import urllib.error
 
 import pytest
 
 from keel_cloud.node import NodeError
 from keel_cloud.node.cli import main
-from keel_cloud.node.client import Client, CloudError
+from keel_cloud.node.client import MAX_ANSWER, Client, CloudError, NoRedirect
 
 
 class Recorder:
@@ -37,6 +38,11 @@ def fresh():
     (["sync", "--wait", "500", "--since", "3"], ("sync", (3, 50))),
     (["confirm", "KEY", "--account-key-file", "/k"],
      ("confirm", ("KEY", "/k"))),
+    (["auto-admit", "on", "--account-key-file", "/k"],
+     ("auto_admit", (True, "/k"))),
+    (["auto-admit", "off", "--account-key-file", "/k"],
+     ("auto_admit", (False, "/k"))),
+    (["forget", "KEY"], ("forget", ("KEY",))),
     (["status"], ("status", ())),
     (["run"], ("run", ())),
 ])
@@ -89,4 +95,50 @@ def test_the_client_reads_the_services_error_message():
 def test_the_client_survives_an_error_without_json():
     client = Client("https://x", "k", opener=Opener(http_error(b"<html>")))
     with pytest.raises(CloudError, match="HTTP 409"):
-        client.confirm("shop", "key")
+        client.confirm("shop", "key", "c" * 64)
+
+
+class Answer(io.BytesIO):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class Recording:
+    def __init__(self, body: bytes):
+        self.body = body
+        self.requests = []
+
+    def open(self, request, timeout):
+        self.requests.append(request)
+        return Answer(self.body)
+
+
+def test_the_client_refuses_an_oversized_answer():
+    client = Client("https://x", "k",
+                    opener=Recording(b"x" * (MAX_ANSWER + 1)))
+    with pytest.raises(CloudError, match="more than"):
+        client.peers("shop")
+
+
+def test_auto_admit_sends_its_proof_or_off():
+    opener = Recording(b"{}")
+    client = Client("https://x", "k", opener=opener)
+    client.auto_admit("shop", "d" * 64)
+    client.auto_admit("shop", None)
+    bodies = [json.loads(r.data) for r in opener.requests]
+    assert bodies == [{"auto_admit": True, "proof": "d" * 64},
+                      {"auto_admit": False}]
+    assert {r.get_method() for r in opener.requests} == {"PATCH"}
+
+
+def test_the_client_never_follows_a_redirect():
+    handler = NoRedirect()
+    with pytest.raises(CloudError, match="redirected") as refused:
+        handler.redirect_request(None, None, 302, "Found", {},
+                                 "http://elsewhere/")
+    assert refused.value.status == 302
+    client = Client("https://x", "k")
+    assert any(isinstance(h, NoRedirect) for h in client.opener.handlers)

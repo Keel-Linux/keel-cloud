@@ -32,7 +32,7 @@ def new_key(scope: str) -> str:
 
 def key_scope(key: str) -> str | None:
     """The scope a key's prefix names, or None for anything else"""
-    if not isinstance(key, str) or not KEY_RE.match(key):
+    if not isinstance(key, str) or not KEY_RE.fullmatch(key):
         return None
     for scope, prefix in PREFIXES.items():
         if key.startswith(prefix):

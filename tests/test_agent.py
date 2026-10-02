@@ -133,10 +133,69 @@ def test_a_node_with_the_wrong_entry_secret_is_refused_by_the_set(
     agent_c = agent_for(intruder)
     agent_a.enroll()
     agent_c.enroll()
-    agent_a.confirm(intruder.machine.key, account_key_file(tmp_path, cloud))
+    with pytest.raises(NodeError, match="not confirmed"):
+        agent_a.confirm(intruder.machine.key,
+                        account_key_file(tmp_path, cloud))
+    # Confirmed by the intruder itself, with its own secret: still refused
+    agent_c.confirm(intruder.machine.key, account_key_file(tmp_path, cloud))
     agent_a.sync()
     assert a.peers() == []
     assert "does not verify" in a.output()
+
+
+def test_automatic_admission_turned_on_from_a_node(tmp_path, cloud, pair):
+    (a, b), (agent_a, agent_b) = pair
+    agent_a.enroll()
+    agent_b.enroll()
+    agent_a.auto_admit(True, account_key_file(tmp_path, cloud))
+    agent_a.sync()
+    assert a.peers()[0]["public_key"] == b.machine.key
+    agent_a.auto_admit(False, account_key_file(tmp_path, cloud))
+    assert "automatic admission off" in a.output()
+
+
+def test_automatic_admission_the_service_turned_on_is_ignored(
+        tmp_path, cloud, pair):
+    (a, b), (agent_a, agent_b) = pair
+    agent_a.enroll()
+    agent_b.enroll()
+    cloud.store.set_auto_admit(1, "shop", "d" * 64)
+    agent_a.sync()
+    assert a.peers() == []
+
+
+def test_forget_removes_a_peer_for_good(tmp_path, cloud, pair):
+    (a, b), (agent_a, agent_b) = pair
+    agent_a.enroll()
+    agent_b.enroll()
+    agent_a.confirm(b.machine.key, account_key_file(tmp_path, cloud))
+    agent_a.sync()
+    assert len(a.peers()) == 1
+    agent_a.forget(b.machine.key)
+    assert a.peers() == [] and "forgot" in a.output()
+    agent_b.system.clock = lambda: NOW + 5
+    agent_b.enroll()
+    agent_a.sync()
+    assert a.peers() == []
+    agent_a.forget(b.machine.key)
+    with pytest.raises(NodeError, match="public_key"):
+        agent_a.forget("nonsense")
+
+
+def test_a_peer_declared_by_hand_is_left_as_it_is(tmp_path, cloud, pair):
+    (a, b), (agent_a, agent_b) = pair
+    agent_a.enroll()
+    agent_b.enroll()
+    doc = a.doc()
+    doc["network"]["overlay"]["wireguard"]["peers"] = [
+        {"public_key": b.machine.key, "allowed_ips": ["fd00:6b65:c1::2/128"]}]
+    import yaml
+    with open(a.spec_path, "w") as stream:
+        yaml.safe_dump(doc, stream)
+    agent_a.confirm(b.machine.key, account_key_file(tmp_path, cloud))
+    agent_a.sync()
+    assert a.peers() == [{"public_key": b.machine.key,
+                          "allowed_ips": ["fd00:6b65:c1::2/128"]}]
 
 
 def test_the_status_names_this_node_pinned_and_pending(tmp_path, cloud,
@@ -210,7 +269,7 @@ def test_a_bad_secret_and_a_bad_record_are_reported(tmp_path, pair):
     (a, _), (agent_a, _) = pair
     with open(a.entry_secret_path, "w") as stream:
         stream.write("short\n")
-    with pytest.raises(NodeError, match="at least 32"):
+    with pytest.raises(NodeError, match="at least 43"):
         agent_a.enroll()
 
 
@@ -223,6 +282,51 @@ def test_a_record_keel_cannot_make_is_reported(tmp_path, cloud, pair):
         yaml.safe_dump(doc, stream)
     with pytest.raises(NodeError, match="this node's record"):
         agent_a.enroll()
+
+
+class Garbage:
+    """A service that answers listings no node can read"""
+
+    def __init__(self, answer):
+        self.answer = answer
+
+    def __call__(self, *args):
+        return self
+
+    def peers(self, *args):
+        return self.answer
+
+    def register(self, *args):
+        return self.answer
+
+
+@pytest.mark.parametrize("answer", [[], {"revision": "1", "nodes": []},
+                                    {"revision": True, "nodes": []},
+                                    {"revision": -1, "nodes": []},
+                                    {"revision": 1, "nodes": {}}])
+def test_a_listing_this_node_cannot_read_stops_the_round(tmp_path, pair,
+                                                         answer):
+    (a, _), _ = pair
+    agent = Agent(a.spec_path, a.state_dir, a.system,
+                  client_factory=Garbage(answer), secret_owner=os.getuid())
+    with pytest.raises(CloudError, match="cannot read"):
+        agent.sync()
+
+
+def test_run_survives_a_service_that_breaks_the_rules(tmp_path, pair):
+    (a, _), _ = pair
+    agent = Agent(a.spec_path, a.state_dir, a.system,
+                  client_factory=Garbage(None), secret_owner=os.getuid())
+    a.machine.addresses = "not json"
+    agent.run(rounds=1)
+    assert "again in 60s" in a.output()
+
+
+def test_confirm_needs_the_node_in_the_set(tmp_path, cloud, pair):
+    (a, b), (agent_a, _) = pair
+    agent_a.enroll()
+    with pytest.raises(NodeError, match="no such node"):
+        agent_a.confirm(b.machine.key, account_key_file(tmp_path, cloud))
 
 
 def test_confirm_checks_the_key_first(tmp_path, pair):
@@ -243,7 +347,7 @@ def test_entry_secret_is_made_once_and_printed(tmp_path, pair):
     assert a.output().count("made a new") == 1
     with open(a.entry_secret_path, "w") as stream:
         stream.write("short\n")
-    with pytest.raises(NodeError, match="at least 32"):
+    with pytest.raises(NodeError, match="at least 43"):
         agent_a.entry_secret()
 
 
@@ -271,6 +375,9 @@ def test_the_endpoint_is_ipv6_first_global_first(tmp_path):
     assert endpoint_address(system, overlay()) == "[fd42::5]:51820"
     machine.addresses = []
     assert endpoint_address(system, overlay()) is None
+    machine.addresses = ["odd", {"ifname": "eth0", "addr_info": [
+        "odd", {"local": "not an address"}, {"local": "2001:db8::5"}]}]
+    assert endpoint_address(system, overlay()) == "[2001:db8::5]:51820"
 
 
 def test_no_endpoint_when_ip_fails(tmp_path):

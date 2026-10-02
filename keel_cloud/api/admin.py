@@ -56,24 +56,25 @@ def build_parser() -> argparse.ArgumentParser:
         dest="verb", required=True)
     sets.add_parser("list", help="the account's sets").add_argument(
         "account")
-    admit = sets.add_parser("auto-admit", help="admit new peers without the"
-                            " operator's confirmation, or stop doing so")
+    admit = sets.add_parser(
+        "auto-admit", help="turn automatic admission off; turning it on, and"
+        " confirming a node, need the set's entry secret, so they are done"
+        " on a node of the set: keel cloud auto-admit, keel cloud confirm")
     admit.add_argument("account")
     admit.add_argument("set")
-    admit.add_argument("value", choices=("on", "off"))
+    admit.add_argument("value", choices=("off",))
 
     peer = nouns.add_parser("peer", help="the nodes of a set")
     peer = peer.add_subparsers(dest="verb", required=True)
     listing = peer.add_parser("list", help="the set's nodes and their state")
     listing.add_argument("account")
     listing.add_argument("set")
-    for verb, text in (("confirm", "admit a pending node"),
-                       ("remove", "forget a node; nodes that admitted it"
-                        " keep it until their operator removes it")):
-        action = peer.add_parser(verb, help=text)
-        action.add_argument("account")
-        action.add_argument("set")
-        action.add_argument("public_key")
+    remove = peer.add_parser("remove", help="forget a node; nodes that"
+                             " admitted it keep it until their operator"
+                             " removes it there (keel cloud forget)")
+    remove.add_argument("account")
+    remove.add_argument("set")
+    remove.add_argument("public_key")
     return parser
 
 
@@ -94,13 +95,11 @@ def run(args, store: Store, out) -> None:
         show(args, store.list_sets(account), out,
              "{name} revision {revision} auto_admit {auto_admit}")
     elif command == ("set", "auto-admit"):
-        store.set_auto_admit(account, args.set, args.value == "on")
+        store.set_auto_admit(account, args.set, None)
     elif command == ("peer", "list"):
         show(args, peer_rows(store, account, args.set), out,
              "{public_key} {status} {overlay} {endpoint} {appliance}"
              " {role} {site}")
-    elif command == ("peer", "confirm"):
-        store.confirm(account, args.set, args.public_key)
     else:
         store.remove(account, args.set, args.public_key)
 
@@ -142,6 +141,7 @@ def drop_privileges(user: str = SERVICE_USER, os_module=os) -> None:
     os_module.setgroups([])
     os_module.setgid(entry.pw_gid)
     os_module.setuid(entry.pw_uid)
+    os_module.umask(0o027)
 
 
 def main(argv: list[str] | None = None, out=sys.stdout) -> int:

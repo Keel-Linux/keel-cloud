@@ -1,6 +1,7 @@
 # Copyright (c) 2026 KeelLinux maintainers
 """The agent's reading and writing of the spec"""
 
+import ipaddress
 import os
 
 import pytest
@@ -89,8 +90,36 @@ def test_overlay_reads_this_nodes_side():
     made = doc()
     made["network"]["overlay"]["wireguard"]["ipv4_address"] = "10.9.0.1/24"
     overlay = spec.overlay(made)
-    assert overlay == spec.Overlay("wg0", ["fd00:6b65:c1::1", "10.9.0.1"],
-                                   51820)
+    assert overlay == spec.Overlay(
+        "wg0", ["fd00:6b65:c1::1", "10.9.0.1"], 51820,
+        (ipaddress.ip_network("fd00:6b65:c1::/64"),
+         ipaddress.ip_network("10.9.0.0/24")))
+
+
+def test_a_secret_behind_a_symbolic_link_is_refused(tmp_path):
+    target = secret_file(tmp_path)
+    os.symlink(target, tmp_path / "link")
+    with pytest.raises(NodeError):
+        spec.read_secret(str(tmp_path / "link"), os.getuid())
+
+
+def test_peer_keys_and_without_peer():
+    one, two = wg_key(), wg_key()
+    made = doc()
+    made["network"]["overlay"]["wireguard"]["peers"] = [
+        {"public_key": one}, {"public_key": two}, "odd"]
+    assert spec.peer_keys(made) == {one, two}
+    assert spec.peers_of(spec.without_peer(made, one)) == [
+        {"public_key": two}, "odd"]
+    assert len(spec.peers_of(made)) == 3
+
+
+def test_write_replaces_a_stale_temporary_file(tmp_path):
+    path = tmp_path / "instance.yaml"
+    path.write_text("version: 1\n")
+    (tmp_path / ".instance.yaml.cloud").write_text("stale")
+    spec.write(str(path), {"version": 1}, lambda candidate: "")
+    assert os.listdir(tmp_path) == ["instance.yaml"]
 
 
 def test_overlay_is_required_and_checked():

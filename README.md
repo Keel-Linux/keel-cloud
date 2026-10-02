@@ -21,7 +21,7 @@ here, each kept in one place so that changing one later is cheap:
 | --- | --- | --- |
 | 1. The language | Python, with Debian 13 packages only (`python3-aiohttp`, `python3-yaml`); nothing is installed from PyPI and nothing goes into the system Python with pip | `debian/control` |
 | 2. The scope of an API key | two scopes: an **account key**, which manages the account, and a narrower **enrollment key**, which nodes hold and which can only register nodes and read their sets | `keel_cloud/keys.py`, the `principal(...)` scopes in `keel_cloud/api/app.py` |
-| 3. Operator confirmation of new peers | **required by default**; automatic admission is a per-set choice (`keel-cloud set auto-admit`) | `sets.auto_admit` in `keel_cloud/api/store.py` |
+| 3. Operator confirmation of new peers | **required by default**; automatic admission is a per-set choice (`keel cloud auto-admit on`) | `_admitted` in `keel_cloud/node/pins.py` |
 | 4. The entry secret's lifetime | **one reusable entry secret per set**, until the operator rotates it; rotation does not affect peers already pinned | `keel_cloud/proof.py` |
 | 6. How a node learns of changes | **outbound long polling** over HTTPS, at most 55 seconds a request, and a retry every 60 seconds when the service is unreachable; Keel Cloud never connects to a node | `MAX_WAIT` in `keel_cloud/api/app.py`, `WAIT` and `RETRY` in `keel_cloud/node/agent.py` |
 | Transport | **IPv6 first, TLS only**: the service listens on `[::]:8443` with TLS and has no plain HTTP listener | `conf/api.conf`, `keel_cloud/api/server.py` |
@@ -49,22 +49,28 @@ Errors are JSON, `{"error": "..."}`.
 | `GET /v1/health` | none | `{"status": "ok", "version": ...}` |
 | `POST /v1/keys` | account | make a key, an enrollment key by default; it is returned once |
 | `GET /v1/sets` | account | the account's sets |
-| `PATCH /v1/sets/{set}` | account | `{"auto_admit": true}` or `false` |
+| `PATCH /v1/sets/{set}` | account | `{"auto_admit": true, "proof": ...}` with the automatic admission proof, or `{"auto_admit": false}` |
 | `POST /v1/sets/{set}/peers` | enrollment or account | register or update a node: `{"record": ..., "proof": ...}`; the set is made on the first registration |
-| `GET /v1/sets/{set}/peers` | enrollment or account | the set's nodes, each with its record, its proof, its status (`pending` or `confirmed`) and whether it is admitted; `?since=REVISION&wait=SECONDS` is the long poll |
-| `POST /v1/sets/{set}/peers/confirm` | account | `{"public_key": ...}`: the operator admits a pending node |
+| `GET /v1/sets/{set}/peers` | enrollment or account | the set's nodes, each with its record, its record proof, its status (`pending` or `confirmed`) and its confirmation; the set's automatic admission proof; `?since=REVISION&wait=SECONDS` is the long poll |
+| `POST /v1/sets/{set}/peers/confirm` | account | `{"public_key": ..., "confirmation": ...}`: the operator admits a pending node |
 
-Accounts and the first keys are made on the instance with the command
-line, which runs as `keel-cloud` even when started as root:
+The service checks the shape of the proofs and relays them; it cannot
+check or make their value. Accounts and keys are made on the instance
+with the command line, which runs as `keel-cloud` even when started as
+root:
 
 ```
 keel-cloud account create acme          # prints the account key, once
 keel-cloud key create acme              # prints an enrollment key, once
-keel-cloud peer list acme shop
-keel-cloud peer confirm acme shop <public key>
-keel-cloud set auto-admit acme shop on
 keel-cloud key revoke acme <id>
+keel-cloud peer list acme shop
+keel-cloud peer remove acme shop <public key>
+keel-cloud set auto-admit acme shop off
 ```
+
+Confirming a node and turning automatic admission on need the set's entry
+secret, so they are done from a node of the set (`keel cloud confirm`,
+`keel cloud auto-admit on`), never from the instance.
 
 A node record is public information only: the WireGuard public key, the
 overlay addresses, the endpoint, the set, and the appliance, role and site
@@ -90,31 +96,48 @@ admits it (`keel_cloud/node/pins.py`).
 and read; it cannot confirm a peer, change a set or make a key, so a key
 read off a node does not admit anything.
 
-**The operator confirms new peers.** A new node is `pending` until the
-operator confirms it with the account key, on the instance (`keel-cloud
-peer confirm`) or from anywhere (`keel cloud confirm KEY
---account-key-file FILE`). A node admits a peer only when it is confirmed
-**and** its proof verifies.
+**The operator confirms new peers, verifiably.** A new node is held until
+the operator runs `keel cloud confirm KEY --account-key-file FILE` on a
+node of the set. That node checks the new node's record proof, makes a
+**confirmation**, an HMAC with the entry secret over the new node's set,
+key and overlay addresses, and sends it with the account key. Every node
+checks the confirmation before it admits the peer, so the service cannot
+confirm a node by itself, and a confirmation cannot be moved to another
+key or other addresses. Automatic admission works the same way: it is
+turned on from a node (`keel cloud auto-admit on`) with a proof every node
+checks, so the service cannot turn it on either.
 
 **Peers are pinned per set, on each node.** Once admitted, a peer's key
 and overlay addresses are kept in `/var/lib/keel-cloud-node/pins.json`
 (root, 0600). Keel Cloud can then bring a newer endpoint for a pinned key,
 with a valid proof, and nothing else: it cannot replace the key, change
-its addresses, roll its record back, or remove it. A new key for a known
-node is a new peer, held like any other. The service keeps the same rules
-on its side: a registered key keeps its addresses, and two nodes of a set
-never share one.
+its addresses, roll its record back, date it ahead, or remove it. A new
+key for a known node is a new peer, held like any other. A peer's
+addresses must lie inside this node's overlay prefixes, so a peer can
+never claim a route to anything else, and a peer the operator declared
+by hand in the spec is left as it is. `keel cloud forget KEY` removes a
+peer from the node for good: Keel Cloud cannot bring that key back. The
+service keeps matching rules on its side: a registered key keeps its
+addresses, and two nodes of a set never share one.
 
-**What a compromised Keel Cloud can and cannot do.** It can only propose:
-it can withhold updates, show records to the operator that are not real,
-or mark a node confirmed, but any record it made or changed fails the
-proof on every node and is not admitted. It cannot add a peer to a set
-without the entry secret, cannot change a pinned peer's key or addresses,
-cannot read traffic between nodes (WireGuard), and cannot reach into a
-node: the agent only calls out. The confirmation step guards against a
-leaked entry secret together with a leaked enrollment key; a compromised
-service could skip it, which is why the proof, checked on the nodes, is
-the line that holds.
+**What a compromised Keel Cloud can and cannot do.** It can only propose
+and relay: it can withhold updates, show the operator records that are
+not real, or stop answering. Any record, confirmation or automatic
+admission it made or changed fails its proof on every node and is not
+admitted. It cannot add a peer to a set, cannot confirm one, cannot
+change a pinned peer's key or addresses, cannot read traffic between
+nodes (WireGuard), and cannot reach into a node: the agent only calls
+out, follows no redirect, and reads answers of bounded size. Admitting a
+node takes both the entry secret, which only nodes hold, and the account
+key, which only the operator holds; a leaked entry secret with a node's
+enrollment key can register a node but not admit it.
+
+**Known limits of Phase A.** Nodes of an account share enrollment keys,
+so a holder of one can register nodes in any set of the account (they
+stay held) or occupy a key or address that a real node then cannot
+register under; per-node keys and quotas are for a later phase. The
+service runs SQLite on the event loop, which is fine at Phase A's scale
+of a few writes a minute.
 
 **The node writes only its own spec.** The agent writes the admitted
 peers into `network.overlay.wireguard.peers` of this node's
@@ -151,7 +174,12 @@ keel cloud confirm KEY --account-key-file FILE    # the operator, once per new n
 keel cloud sync                    # the confirmed peers go into the spec
 keel spec apply --system           # converge the overlay, under its window
 keel network confirm               # keep it
+keel cloud status                  # the set, and what this node admitted
+keel cloud forget KEY              # remove a peer here, for good
 ```
+
+The account key file is needed only while confirming; keep it off the
+nodes otherwise.
 
 `systemctl enable --now keel-cloud-node` does the enroll and sync for good,
 with long polling; the apply and the confirmation stay the operator's.
@@ -206,25 +234,26 @@ enrollment key, the set's entry secret and the instance's certificate.
 
 - The service ran as `keel-cloud`, listening on `[::]:8443`; plain HTTP
   got no answer; the database held no key in plain text.
-- Both nodes enrolled and were held as pending; each refused the other
-  until the operator confirmed it. A node's enrollment key was refused
-  (403) when it tried to confirm.
-- The operator confirmed one node with `keel-cloud peer confirm` and the
-  other with `keel cloud confirm` and the account key; each node's spec
-  then gained the other as its only peer, with its endpoint, its `/128`
-  and a keepalive.
+- Both nodes enrolled and were held as pending. A node's enrollment key
+  was refused (403) when it tried to confirm.
+- A compromised service was simulated by editing its database: it marked
+  both nodes confirmed with a made-up confirmation and turned automatic
+  admission on with a made-up proof. Both nodes still held each other.
+- The operator confirmed each node from the other with `keel cloud
+  confirm` and the account key, removed afterwards; each node's spec then
+  gained the other as its only peer, with its endpoint, its `/128` and a
+  keepalive, and pinned it.
 - `keel spec apply --system` brought `wg0` up on each node under the
   window, `keel network confirm` kept it and enabled `wg-quick@wg0`, both
   nodes had a handshake, and each pinged the other over the overlay;
   `keel diff` showed every overlay field `same`.
-- A compromised service was simulated by editing its database: it moved
-  one node's endpoint and added a bogus peer marked confirmed. The other
-  node refused both, since neither proof verified, left its spec
-  unchanged and kept the overlay up; the real node's next registration
-  was accepted again.
-- `keel-cloud-node.service` ran on a node under its hardening, enrolled,
-  and was woken by a change on the other node through its long poll, on
-  an outbound connection only.
+- The compromised service then moved one node's endpoint and added a
+  bogus peer marked confirmed. The other node refused both, since neither
+  proof verified, left its spec unchanged and kept the overlay up; the
+  real node's next registration was accepted again.
+- `keel-cloud-node.service` ran on a node under its hardening; when the
+  other node registered a new endpoint, the long poll brought it into the
+  spec within seconds, on an outbound connection only.
 
 The containers were destroyed afterwards.
 

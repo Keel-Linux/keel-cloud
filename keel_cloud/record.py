@@ -38,14 +38,14 @@ MAX_TS = 2 ** 40
 
 
 def label_error(name: str, value: Any) -> str | None:
-    if not isinstance(value, str) or not LABEL_RE.match(value):
+    if not isinstance(value, str) or not LABEL_RE.fullmatch(value):
         return (f"{name}: must be a lower case DNS label (a-z, 0-9 and '-',"
                 " at most 63)")
     return None
 
 
 def public_key_error(value: Any) -> str | None:
-    if not isinstance(value, str) or not PUBLIC_KEY_RE.match(value):
+    if not isinstance(value, str) or not PUBLIC_KEY_RE.fullmatch(value):
         return "public_key: not a WireGuard public key as wg pubkey prints it"
     return None
 
@@ -55,6 +55,8 @@ def overlay_address(value: Any) -> ipaddress.IPv4Address | \
     """One overlay address, private, as an ip_address; ValueError if not"""
     if not isinstance(value, str):
         raise ValueError("not a string")
+    if "%" in value:
+        raise ValueError("no scope: an overlay address is not link local")
     address = ipaddress.ip_address(value)
     if address.version == 6 and address not in ULA:
         raise ValueError("an IPv6 overlay address is a unique local"
@@ -96,7 +98,9 @@ def endpoint_error(value: Any) -> str | None:
     if not isinstance(value, str) or ":" not in value:
         return message
     host, _, port = value.rpartition(":")
-    if not port.isdigit() or not 1 <= int(port) <= 65535:
+    if not (port.isascii() and port.isdigit()) or not 1 <= int(port) <= 65535:
+        return message
+    if "%" in host:
         return message
     if host.startswith("[") and host.endswith("]"):
         try:
@@ -104,7 +108,7 @@ def endpoint_error(value: Any) -> str | None:
         except ValueError:
             return message
         return None
-    if ":" in host or not HOST_RE.match(host):
+    if ":" in host or not HOST_RE.fullmatch(host):
         return message
     return None
 

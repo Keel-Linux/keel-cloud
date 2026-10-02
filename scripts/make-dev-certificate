@@ -27,4 +27,6 @@ chmod 0644 "$dir/cert.pem.new"
 chmod 0755 "$dir"
 mv "$dir/key.pem.new" "$dir/key.pem"
 mv "$dir/cert.pem.new" "$dir/cert.pem"
+# What the package's purge may remove: only this certificate, by its hash
+(cd "$dir" && sha256sum cert.pem > .made-by-make-dev-certificate)
 echo "make-dev-certificate: $dir/cert.pem for $san"

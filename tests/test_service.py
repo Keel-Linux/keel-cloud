@@ -135,16 +135,26 @@ def test_the_command_line_manages_sets_and_peers(tmp_path, capsys):
     store.close()
     code, text = cli(tmp_path, "peer", "list", "acme", "shop")
     assert record["public_key"] in text and "pending" in text
-    assert cli(tmp_path, "peer", "confirm", "acme", "shop",
-               record["public_key"])[0] == 0
-    assert "confirmed" in cli(tmp_path, "peer", "list", "acme", "shop")[1]
-    assert cli(tmp_path, "set", "auto-admit", "acme", "shop", "on")[0] == 0
+    store = Store(str(tmp_path / "cloud.db"))
+    store.set_auto_admit(store.account_id("acme"), "shop", "d" * 64)
+    store.close()
     assert "auto_admit True" in cli(tmp_path, "set", "list", "acme")[1]
+    assert cli(tmp_path, "set", "auto-admit", "acme", "shop", "off")[0] == 0
+    assert "auto_admit False" in cli(tmp_path, "set", "list", "acme")[1]
     assert cli(tmp_path, "peer", "remove", "acme", "shop",
                record["public_key"])[0] == 0
     assert cli(tmp_path, "peer", "remove", "acme", "shop",
                record["public_key"])[0] == 1
     assert "no such node" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("argv", [
+    ("peer", "confirm", "acme", "shop", "KEY"),
+    ("set", "auto-admit", "acme", "shop", "on")])
+def test_the_instance_cannot_confirm_or_turn_admission_on(tmp_path, argv):
+    """Both need the entry secret, which only the nodes hold"""
+    with pytest.raises(SystemExit):
+        cli(tmp_path, *argv)
 
 
 def test_the_command_line_reports_what_it_cannot_open(tmp_path, capsys):
@@ -174,7 +184,7 @@ def test_root_becomes_the_service_user_before_it_opens_the_database():
     fake = FakeOs(0)
     admin.drop_privileges("root", fake)
     assert [name for name, _ in fake.calls] == ["setgroups", "setgid",
-                                                "setuid"]
+                                                "setuid", "umask"]
     fake = FakeOs(0)
     admin.drop_privileges("no-such-user-here", fake)
     assert fake.calls == []

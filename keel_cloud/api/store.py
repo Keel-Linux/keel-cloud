@@ -2,9 +2,12 @@
 """Keel Cloud's state in SQLite
 
 What is stored: accounts, the SHA-256 of each API key (never the key),
-sets, and per node its public record and the proof that came with it.
-What is never stored, because it never reaches the service: an entry
-secret, a node's private key, and any application data.
+sets, per node its public record, the record proof that came with it and
+the operator's confirmation, and per set the automatic admission proof
+when the operator turned it on. The proofs are made on nodes with the
+set's entry secret and only relayed here (keel_cloud.proof). What is
+never stored, because it never reaches the service: an entry secret, a
+node's private key, and any application data.
 
 Every change to a set raises its revision, which is what a long poll
 waits on. The revision lives in the database, so a change made with the
@@ -49,7 +52,7 @@ CREATE TABLE IF NOT EXISTS sets (
     id INTEGER PRIMARY KEY,
     account_id INTEGER NOT NULL REFERENCES accounts(id),
     name TEXT NOT NULL,
-    auto_admit INTEGER NOT NULL DEFAULT 0,
+    auto_admit TEXT,
     revision INTEGER NOT NULL DEFAULT 0,
     created INTEGER NOT NULL,
     UNIQUE (account_id, name)
@@ -62,6 +65,7 @@ CREATE TABLE IF NOT EXISTS nodes (
     proof TEXT NOT NULL,
     ts INTEGER NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('pending', 'confirmed')),
+    confirmation TEXT,
     created INTEGER NOT NULL,
     updated INTEGER NOT NULL,
     UNIQUE (set_id, public_key)
@@ -88,7 +92,7 @@ class Principal:
 class SetView:
     name: str
     revision: int
-    auto_admit: bool
+    auto_admit: str | None    # the proof, None when admission is manual
     nodes: tuple
 
 
@@ -214,14 +218,20 @@ class Store:
         rows = self.db.execute(
             "SELECT name, auto_admit, revision FROM sets WHERE account_id = ?"
             " ORDER BY name", (account_id,))
-        return [{"name": r["name"], "auto_admit": bool(r["auto_admit"]),
+        return [{"name": r["name"], "auto_admit": r["auto_admit"] is not None,
                  "revision": r["revision"]} for r in rows]
 
-    def set_auto_admit(self, account_id: int, name: str, value: bool) -> int:
+    def set_auto_admit(self, account_id: int, name: str,
+                       proof: str | None) -> int:
+        """Automatic admission on, with the operator's proof, or off (None)
+
+        Only a node can make the proof, and every node checks it, so the
+        service cannot turn automatic admission on by itself.
+        """
         with self._transaction():
             row = self._require_set(account_id, name)
             self.db.execute("UPDATE sets SET auto_admit = ? WHERE id = ?",
-                            (int(bool(value)), row["id"]))
+                            (proof, row["id"]))
             return self._bump(row["id"])
 
     def revision(self, account_id: int, name: str) -> int:
@@ -279,26 +289,32 @@ class Store:
 
     def _nodes(self, set_id: int) -> list[dict]:
         rows = self.db.execute(
-            "SELECT public_key, record, proof, status, created, updated"
-            " FROM nodes WHERE set_id = ? ORDER BY id", (set_id,))
+            "SELECT public_key, record, proof, status, confirmation, created,"
+            " updated FROM nodes WHERE set_id = ? ORDER BY id", (set_id,))
         return [{"public_key": r["public_key"],
                  "record": json.loads(r["record"]), "proof": r["proof"],
-                 "status": r["status"], "created": r["created"],
-                 "updated": r["updated"]} for r in rows]
+                 "status": r["status"], "confirmation": r["confirmation"],
+                 "created": r["created"], "updated": r["updated"]}
+                for r in rows]
 
     def view(self, account_id: int, name: str) -> SetView:
         row = self._require_set(account_id, name)
-        return SetView(name, row["revision"], bool(row["auto_admit"]),
+        return SetView(name, row["revision"], row["auto_admit"],
                        tuple(self._nodes(row["id"])))
 
-    def confirm(self, account_id: int, name: str, public_key: str) -> int:
-        """The operator admits a pending node into its set"""
+    def confirm(self, account_id: int, name: str, public_key: str,
+                confirmation: str) -> int:
+        """The operator admits a pending node, with a confirmation proof
+
+        The proof is made on a node of the set, where the entry secret is,
+        and every node checks it; the service only relays it.
+        """
         with self._transaction():
             row = self._require_set(account_id, name)
             cursor = self.db.execute(
-                "UPDATE nodes SET status = ?, updated = ? WHERE set_id = ?"
-                " AND public_key = ?",
-                (CONFIRMED, self.now(), row["id"], public_key))
+                "UPDATE nodes SET status = ?, confirmation = ?, updated = ?"
+                " WHERE set_id = ? AND public_key = ?",
+                (CONFIRMED, confirmation, self.now(), row["id"], public_key))
             if cursor.rowcount != 1:
                 raise StoreError("not_found", "public_key: no such node in"
                                  f" set {name}")

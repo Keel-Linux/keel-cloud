@@ -118,22 +118,29 @@ def test_confirm_admits_and_remove_forgets(store, account):
     account_id, _ = account
     record = make_record()
     store.register(account_id, record, "a" * 64)
-    assert store.confirm(account_id, "shop", record["public_key"]) == 2
-    assert store.view(account_id, "shop").nodes[0]["status"] == CONFIRMED
+    assert store.view(account_id, "shop").nodes[0]["confirmation"] is None
+    assert store.confirm(account_id, "shop", record["public_key"],
+                         "c" * 64) == 2
+    node = store.view(account_id, "shop").nodes[0]
+    assert (node["status"], node["confirmation"]) == (CONFIRMED, "c" * 64)
     assert store.remove(account_id, "shop", record["public_key"]) == 3
     assert store.view(account_id, "shop").nodes == ()
-    for action in (store.confirm, store.remove):
-        with pytest.raises(StoreError, match="no such node"):
-            action(account_id, "shop", record["public_key"])
+    with pytest.raises(StoreError, match="no such node"):
+        store.confirm(account_id, "shop", record["public_key"], "c" * 64)
+    with pytest.raises(StoreError, match="no such node"):
+        store.remove(account_id, "shop", record["public_key"])
 
 
-def test_auto_admit_and_unknown_sets(store, account):
+def test_auto_admit_keeps_its_proof_and_unknown_sets(store, account):
     account_id, _ = account
     with pytest.raises(StoreError, match="no such set"):
         store.revision(account_id, "shop")
     store.register(account_id, make_record(), "a" * 64)
-    assert store.set_auto_admit(account_id, "shop", True) == 2
-    assert store.view(account_id, "shop").auto_admit
+    assert store.set_auto_admit(account_id, "shop", "d" * 64) == 2
+    assert store.view(account_id, "shop").auto_admit == "d" * 64
+    assert store.list_sets(account_id)[0]["auto_admit"] is True
+    store.set_auto_admit(account_id, "shop", None)
+    assert store.view(account_id, "shop").auto_admit is None
 
 
 def test_sets_belong_to_one_account(store, account):

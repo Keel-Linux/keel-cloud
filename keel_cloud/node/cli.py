@@ -8,6 +8,9 @@
                                         write the pinned peers into the spec
     keel-cloud-node confirm KEY --account-key-file FILE
                                         the operator admits a pending node
+    keel-cloud-node auto-admit on|off --account-key-file FILE
+                                        admission on the record proof alone
+    keel-cloud-node forget KEY          remove a peer here for good
     keel-cloud-node status              the set as Keel Cloud and this node
                                         see it
     keel-cloud-node run                 enroll and long poll for ever, the
@@ -49,12 +52,20 @@ def build_parser() -> argparse.ArgumentParser:
                       help=f"long poll for a change first, at most {WAIT}")
     sync.add_argument("--since", type=int, default=0, metavar="REVISION",
                       help="the revision already seen, for --wait")
-    confirm = actions.add_parser("confirm", help="admit a pending node, with"
-                                 " the account key")
+    confirm = actions.add_parser("confirm", help="admit a pending node: a"
+                                 " confirmation made here with the entry"
+                                 " secret, sent with the account key")
     confirm.add_argument("public_key")
-    confirm.add_argument("--account-key-file", required=True, metavar="FILE",
-                         help="a file holding the account key, root's and"
-                         " mode 0600")
+    admit = actions.add_parser("auto-admit", help="let the set admit new"
+                               " nodes on their record proof alone, or stop")
+    admit.add_argument("value", choices=("on", "off"))
+    for action in (confirm, admit):
+        action.add_argument("--account-key-file", required=True,
+                            metavar="FILE", help="a file holding the account"
+                            " key, root's and mode 0600")
+    forget = actions.add_parser("forget", help="remove a peer from this node"
+                                " for good; Keel Cloud cannot bring it back")
+    forget.add_argument("public_key")
     actions.add_parser("status", help="the set and its peers")
     actions.add_parser("run", help="enroll, then long poll for changes")
     return parser
@@ -72,6 +83,10 @@ def main(argv: list[str] | None = None, agent_factory=Agent) -> int:
             agent.sync(args.since, max(0, min(args.wait, WAIT)))
         elif args.action == "confirm":
             agent.confirm(args.public_key, args.account_key_file)
+        elif args.action == "auto-admit":
+            agent.auto_admit(args.value == "on", args.account_key_file)
+        elif args.action == "forget":
+            agent.forget(args.public_key)
         elif args.action == "status":
             agent.status()
         else:

@@ -1,5 +1,6 @@
 # Copyright (c) 2026 KeelLinux maintainers
-"""What the node agent does: enroll, sync, run, confirm, entry-secret
+"""What the node agent does: enroll, sync, run, confirm, auto-admit,
+forget, entry-secret, status
 
 Everything that touches the machine goes through `System` (commands, the
 clock, sleeping, output), so the agent is tested without a machine.
@@ -16,7 +17,14 @@ from typing import Callable, TextIO
 
 from keel_cloud.node import NodeError, pins, spec
 from keel_cloud.node.client import Client, CloudError
-from keel_cloud.proof import make_proof, new_entry_secret, parse_entry_secret
+from keel_cloud.proof import (
+    make_auto_admit,
+    make_confirmation,
+    make_proof,
+    new_entry_secret,
+    parse_entry_secret,
+    verify_proof,
+)
 from keel_cloud.record import (
     ULA,
     label_error,
@@ -30,7 +38,7 @@ REFRESH = 600
 WAIT = 50
 RETRY = 60
 SKIPPED_FLAGS = ("temporary", "deprecated", "tentative", "dadfailed")
-APPLY_HINT = ("the spec has new peers: run keel spec apply --system, then"
+APPLY_HINT = ("the spec's peers changed: run keel spec apply --system, then"
               " keel network confirm, as for any overlay change (decision"
               " 0018)")
 
@@ -77,20 +85,35 @@ def endpoint_address(system: System, overlay: spec.Overlay) -> str | None:
     except ValueError:
         links = []
     candidates = []
-    for link in links:
-        if link.get("ifname") == overlay.interface:
+    for link in links if isinstance(links, list) else []:
+        if not isinstance(link, dict) or \
+                link.get("ifname") == overlay.interface:
             continue
-        for info in link.get("addr_info", []):
-            if "local" not in info or any(info.get(flag) for flag in
-                                          SKIPPED_FLAGS):
+        for info in link.get("addr_info") or []:
+            if not isinstance(info, dict) or "local" not in info or any(
+                    info.get(flag) for flag in SKIPPED_FLAGS):
                 continue
-            address = ipaddress.ip_address(info["local"])
+            try:
+                address = ipaddress.ip_address(info["local"])
+            except ValueError:
+                continue
             candidates.append((_rank(address), len(candidates), address))
     if not candidates:
         return None
     best = min(candidates)[2]
     host = f"[{best}]" if best.version == 6 else str(best)
     return f"{host}:{overlay.listen_port}"
+
+
+def checked(listing) -> dict:
+    """A listing this node can read, or a CloudError: a service that
+    answers anything else stops this round, not the agent"""
+    revision = listing.get("revision") if isinstance(listing, dict) else None
+    if isinstance(revision, bool) or not isinstance(revision, int) or \
+            revision < 0 or not isinstance(listing.get("nodes"), list):
+        raise CloudError(None, "the service answered a listing this node"
+                         " cannot read")
+    return listing
 
 
 def _label(value) -> str | None:
@@ -174,23 +197,31 @@ class Agent:
     def sync(self, since: int = 0, wait: int = 0) -> int:
         """Admit what the set proposes, and write the pinned peers"""
         ctx = self.context()
-        listing = ctx.client.peers(ctx.settings.set, since, wait)
-        own = public_key(self.system, self.spec_path)
+        listing = checked(ctx.client.peers(ctx.settings.set, since, wait))
+        # Read again after the long poll, so an edit the operator made
+        # meanwhile is kept
+        doc = spec.load(self.spec_path)
+        overlay = spec.overlay(doc)
+        own = pins.Own(public_key(self.system, self.spec_path),
+                       tuple(overlay.addresses), overlay.networks)
         path = self.pins_path()
-        old = pins.load(path, ctx.settings.set)
-        decision = pins.decide(old, listing.get("nodes", []), own_key=own,
-                               own_overlay=ctx.overlay.addresses,
-                               secret=ctx.secret, set_name=ctx.settings.set)
+        state = pins.load(path, ctx.settings.set)
+        rules = pins.Rules(
+            ctx.secret, ctx.settings.set, int(self.system.clock()),
+            pins.auto_admit(listing, ctx.secret, ctx.settings.set),
+            frozenset(spec.peer_keys(doc) - set(state.pins)),
+            frozenset(state.forgotten))
+        decision = pins.decide(state.pins, listing["nodes"], own, rules)
         for note in decision.notes:
             self.system.say(note)
-        if decision.pins != old:
-            pins.save(path, ctx.settings.set, decision.pins)
-        updated = spec.with_peers(ctx.doc, pins.wireguard_peers(
-            decision.pins))
-        if spec.peers_of(updated) != spec.peers_of(ctx.doc):
+        if decision.pins != state.pins:
+            pins.save(path, ctx.settings.set,
+                      pins.State(decision.pins, state.forgotten))
+        updated = spec.with_peers(doc, pins.wireguard_peers(decision.pins))
+        if spec.peers_of(updated) != spec.peers_of(doc):
             spec.write(self.spec_path, updated, self.validate)
             self.system.say(APPLY_HINT)
-        return int(listing.get("revision", 0))
+        return listing["revision"]
 
     def pins_path(self) -> str:
         os.makedirs(self.state_dir, mode=0o700, exist_ok=True)
@@ -211,24 +242,71 @@ class Agent:
                     self.enroll(current["endpoint"])
                     enrolled_at, sent = now, current
                 revision = self.sync(revision, self.wait)
-            except (CloudError, NodeError) as failure:
+            except (CloudError, NodeError, OSError, ValueError, TypeError,
+                    KeyError) as failure:
                 self.system.say(f"keel-cloud-node: {failure}; again in"
                                 f" {RETRY}s")
                 self.system.sleep(RETRY)
 
+    def operator(self, account_key_file: str) -> tuple[Context, Client]:
+        """This node's context, and a client with the operator's key"""
+        ctx = self.context()
+        key = spec.read_secret(account_key_file, self.owner)
+        return ctx, self.client_factory(ctx.settings.endpoint, key,
+                                        ctx.settings.ca_file)
+
     def confirm(self, public_key_value: str, account_key_file: str) -> None:
-        """The operator admits a node, with the account key"""
-        doc = spec.load(self.spec_path)
-        settings = spec.cloud_settings(doc)
+        """The operator admits a node: a confirmation made here, where the
+        entry secret is, sent with the account key"""
         message = public_key_error(public_key_value)
         if message:
             raise NodeError(message)
-        key = spec.read_secret(account_key_file, self.owner)
-        client = self.client_factory(settings.endpoint, key,
-                                     settings.ca_file)
-        client.confirm(settings.set, public_key_value)
-        self.system.say(f"confirmed {public_key_value} in set"
-                        f" {settings.set}")
+        ctx, client = self.operator(account_key_file)
+        listing = checked(client.peers(ctx.settings.set))
+        found = [n for n in listing["nodes"] if isinstance(n, dict) and
+                 isinstance(n.get("record"), dict) and
+                 n["record"].get("public_key") == public_key_value]
+        if not found:
+            raise NodeError(f"{public_key_value}: no such node in set"
+                            f" {ctx.settings.set}")
+        record = found[0]["record"]
+        if validate_record(record) or not verify_proof(
+                ctx.secret, record, found[0].get("proof")):
+            raise NodeError(f"{public_key_value}: its record proof does not"
+                            " verify with this set's entry secret; not"
+                            " confirmed")
+        client.confirm(ctx.settings.set, public_key_value,
+                       make_confirmation(ctx.secret, record))
+        self.system.say(f"confirmed {public_key_value}"
+                        f" ({', '.join(record['overlay'])}) in set"
+                        f" {ctx.settings.set}")
+
+    def auto_admit(self, on: bool, account_key_file: str) -> None:
+        """The operator lets the set admit on the record proof alone"""
+        ctx, client = self.operator(account_key_file)
+        proof = make_auto_admit(ctx.secret, ctx.settings.set) if on else None
+        client.auto_admit(ctx.settings.set, proof)
+        self.system.say(f"automatic admission {'on' if on else 'off'} in"
+                        f" set {ctx.settings.set}")
+
+    def forget(self, key: str) -> None:
+        """The operator removes a peer here, for good: Keel Cloud cannot
+        bring it back, a new key is needed"""
+        message = public_key_error(key)
+        if message:
+            raise NodeError(message)
+        doc = spec.load(self.spec_path)
+        settings = spec.cloud_settings(doc)
+        path = self.pins_path()
+        state = pins.load(path, settings.set)
+        kept = {k: v for k, v in state.pins.items() if k != key}
+        pins.save(path, settings.set,
+                  pins.State(kept, tuple(state.forgotten) + (key,)))
+        if key in spec.peer_keys(doc):
+            spec.write(self.spec_path, spec.without_peer(doc, key),
+                       self.validate)
+            self.system.say(APPLY_HINT)
+        self.system.say(f"forgot {key} in set {settings.set}")
 
     def entry_secret(self) -> None:
         """Print the set's entry secret, making it on the first node"""
@@ -250,14 +328,15 @@ class Agent:
 
     def status(self) -> None:
         ctx = self.context()
-        listing = ctx.client.peers(ctx.settings.set)
+        listing = checked(ctx.client.peers(ctx.settings.set))
         own = public_key(self.system, self.spec_path)
-        pinned = pins.load(self.pins_path(), ctx.settings.set)
+        pinned = pins.load(self.pins_path(), ctx.settings.set).pins
         self.system.say(f"set {ctx.settings.set} at"
                         f" {ctx.settings.endpoint}, revision"
-                        f" {listing.get('revision')}")
-        for node in listing.get("nodes", []):
-            record = node.get("record") or {}
+                        f" {listing['revision']}")
+        for node in listing["nodes"]:
+            record = (node.get("record") if isinstance(node, dict) else
+                      None) or {}
             key = record.get("public_key")
             state = ("this node" if key == own else "pinned"
                      if key in pinned else
