@@ -1,0 +1,71 @@
+Source: keel-cloud
+Section: net
+Priority: optional
+Maintainer: KeelLinux maintainers <admin@keellinux.org>
+Build-Depends:
+ debhelper-compat (= 13),
+ dh-python,
+ pybuild-plugin-pyproject,
+ python3 (>= 3.12),
+ python3-setuptools,
+Standards-Version: 4.7.2
+Rules-Requires-Root: no
+X-Python3-Version: >= 3.12
+Homepage: https://github.com/Keel-Linux/keel-cloud
+Vcs-Git: https://github.com/Keel-Linux/keel-cloud.git
+Vcs-Browser: https://github.com/Keel-Linux/keel-cloud
+
+Package: python3-keel-cloud
+Section: python
+Architecture: all
+Depends:
+ python3-yaml,
+ ${python3:Depends},
+ ${misc:Depends},
+Description: Keel Cloud, the library both sides share
+ Keel Cloud coordinates Keel nodes that their operator owns: it tells the
+ nodes of a set about each other, so they exchange WireGuard public keys
+ and endpoints without copy and paste. It is never required: a standalone
+ Keel node has every feature a node in Keel Cloud has.
+ .
+ This package holds the Python package keel_cloud: the node record, the
+ entry secret proof and the API key formats, the API service and the node
+ agent. The commands are in keel-cloud-api and keel-overlay-cloud.
+
+Package: keel-cloud-api
+Architecture: all
+Depends:
+ python3-keel-cloud (= ${binary:Version}),
+ python3-aiohttp,
+ openssl,
+ ${python3:Depends},
+ ${misc:Depends},
+Description: Keel Cloud, the API service
+ Keel Cloud coordinates Keel nodes that their operator owns: it tells the
+ nodes of a set about each other, so they exchange WireGuard public keys
+ and endpoints without copy and paste.
+ .
+ This package is the service: keel-cloud-api, a TLS-only HTTP API on [::]
+ that runs as its own unprivileged user and keeps its state in SQLite,
+ storing only the hashes of API keys; and keel-cloud, the command line
+ that makes accounts and keys on the instance.
+
+Package: keel-overlay-cloud
+Architecture: all
+Depends:
+ python3-keel-cloud (= ${binary:Version}),
+ keel (>= 0.16.0~),
+ wireguard-tools,
+ ${python3:Depends},
+ ${misc:Depends},
+Description: Keel Cloud, the node agent
+ Keel Cloud coordinates Keel nodes that their operator owns: it tells the
+ nodes of a set about each other, so they exchange WireGuard public keys
+ and endpoints without copy and paste.
+ .
+ This package is the node's side: keel-cloud-node, also reached as
+ "keel cloud". It reads the cloud section of the instance spec, registers
+ the node with a proof built from its set's entry secret, checks the
+ proofs of the other nodes, and writes the peers the operator confirmed
+ into the spec's WireGuard overlay, which keel spec apply converges. Its
+ service is installed disabled.

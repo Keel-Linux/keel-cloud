@@ -1,0 +1,18 @@
+#!/bin/sh
+set -e
+
+# The user first, for the key's group; the debhelper snippet below makes
+# it too, which is harmless. Then a development certificate, only when
+# there is none, so a certificate the operator installed is never
+# replaced.
+if [ "$1" = "configure" ]; then
+    systemd-sysusers /usr/lib/sysusers.d/keel-cloud-api.conf
+    if [ ! -e /etc/keel-cloud/tls/cert.pem ] && \
+       [ ! -e /etc/keel-cloud/tls/key.pem ]; then
+        /usr/libexec/keel-cloud-api/make-dev-certificate
+    fi
+fi
+
+#DEBHELPER#
+
+exit 0

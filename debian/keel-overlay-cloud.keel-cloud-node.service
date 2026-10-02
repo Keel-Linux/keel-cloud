@@ -1,0 +1,41 @@
+[Unit]
+Description=Keel Cloud node agent: membership and WireGuard key exchange
+Documentation=https://github.com/Keel-Linux/keel-cloud
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/keel/instance.yaml
+
+# Root, because it reads the spec's secret files (root's, 0600) and
+# writes the spec; keel network wireguard key may make this node's key
+# in /etc/wireguard on the first run. It never writes WireGuard's
+# configuration: keel spec apply converges the spec.
+[Service]
+Type=simple
+ExecStart=/usr/bin/keel-cloud-node run
+Restart=on-failure
+RestartSec=30
+StateDirectory=keel-cloud-node
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/etc/keel -/etc/wireguard
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

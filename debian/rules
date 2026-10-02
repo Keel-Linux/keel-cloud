@@ -1,0 +1,22 @@
+#! /usr/bin/make -f
+
+export PYTHONDONTWRITEBYTECODE=1
+# Three binary packages from one Python package: everything is installed
+# into debian/tmp and split by the .install files. PYBUILD_NAME is not
+# set, since with it pybuild installs into python3-keel-cloud directly.
+export PYBUILD_DESTDIR=debian/tmp
+
+%:
+	dh $@ --with python3 --buildsystem=pybuild
+
+# The tests need the service's dependencies and a TLS certificate; CI runs
+# them on trixie before it builds the package (.github/workflows).
+override_dh_auto_test:
+
+# The service's user, from debian/keel-cloud-api.sysusers; dh_installsysusers
+# is not in compat 13's sequence. Its snippet runs before the unit starts.
+override_dh_installsystemd:
+	dh_installsysusers
+	dh_installsystemd -pkeel-cloud-api --name=keel-cloud-api
+	dh_installsystemd -pkeel-overlay-cloud --name=keel-cloud-node \
+		--no-enable --no-start

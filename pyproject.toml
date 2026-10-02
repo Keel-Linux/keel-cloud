@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=77.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "keel-cloud"
+version = "0.1.0"
+authors = [{name = "KeelLinux maintainers"}]
+description = "Keel Cloud: membership and WireGuard key exchange for Keel nodes"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "GPL-3.0-or-later"
+# The dependencies are Debian packages, named per binary package in
+# debian/control: the node agent needs PyYAML and not aiohttp.
+dependencies = []
+
+[project.scripts]
+keel-cloud = "keel_cloud.api.admin:main"
+keel-cloud-api = "keel_cloud.api.server:main"
+keel-cloud-node = "keel_cloud.node.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Keel-Linux/keel-cloud"
+
+[tool.setuptools]
+packages = ["keel_cloud", "keel_cloud.api", "keel_cloud.node"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+# A test that cannot run fails rather than skips: a skipped suite would
+# pass the coverage gate on code nothing ran.
+filterwarnings = ["error::pytest.PytestUnhandledCoroutineWarning"]
+
+[tool.coverage.run]
+branch = true
+source = ["keel_cloud"]
+
+[tool.coverage.report]
+fail_under = 95
+show_missing = true

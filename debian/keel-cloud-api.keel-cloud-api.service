@@ -1,0 +1,39 @@
+[Unit]
+Description=Keel Cloud API service (TLS only)
+Documentation=https://github.com/Keel-Linux/keel-cloud
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=keel-cloud
+Group=keel-cloud
+ExecStart=/usr/bin/keel-cloud-api --config /etc/keel-cloud/api.conf
+Restart=on-failure
+RestartSec=5
+StateDirectory=keel-cloud
+StateDirectoryMode=0750
+UMask=0027
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+SystemCallFilter=@system-service
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

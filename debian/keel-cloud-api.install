@@ -1,0 +1,4 @@
+usr/bin/keel-cloud
+usr/bin/keel-cloud-api
+conf/api.conf                   etc/keel-cloud
+scripts/make-dev-certificate    usr/libexec/keel-cloud-api

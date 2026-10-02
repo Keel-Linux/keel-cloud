@@ -1,0 +1,20 @@
+#!/bin/sh
+set -e
+
+# Purge removes the service's state (accounts, key hashes, node records)
+# and the development certificate make-dev-certificate made; a
+# certificate the operator installed in its place is left alone.
+if [ "$1" = "purge" ]; then
+    rm -rf /var/lib/keel-cloud
+    tls=/etc/keel-cloud/tls
+    if [ -e "$tls/.made-by-make-dev-certificate" ] && (cd "$tls" &&
+            sha256sum --check --status .made-by-make-dev-certificate); then
+        rm -f "$tls/cert.pem" "$tls/key.pem" \
+            "$tls/.made-by-make-dev-certificate"
+        rmdir "$tls" 2>/dev/null || true
+    fi
+fi
+
+#DEBHELPER#
+
+exit 0
