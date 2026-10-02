@@ -1,0 +1,34 @@
+.TH KEEL-CLOUD-API 8 "2026-10-02" "keel-cloud 0.1.0" "Keel Cloud"
+.SH NAME
+keel-cloud-api \- the Keel Cloud API service
+.SH SYNOPSIS
+.B keel-cloud-api
+[\fB\-\-config\fR \fIFILE\fR]
+.SH DESCRIPTION
+The HTTP API of Keel Cloud, which tells the nodes of a set about each
+other so they exchange WireGuard public keys and endpoints. It listens
+with TLS only, on \fB[::]:8443\fR by default, and keeps its state in
+SQLite: accounts, the SHA-256 of each API key, sets, and the public record
+and entry secret proof of each node. It never holds an entry secret, a
+node's private key or application data.
+.PP
+It runs as the unprivileged user \fBkeel-cloud\fR under the systemd unit
+\fBkeel-cloud-api.service\fR.
+.SH OPTIONS
+.TP
+.BR \-\-config " " \fIFILE\fR
+The configuration file, \fI/etc/keel-cloud/api.conf\fR by default.
+.SH FILES
+.TP
+.I /etc/keel-cloud/api.conf
+listen address, port, certificate, private key and database.
+.TP
+.I /etc/keel-cloud/tls/
+the certificate and its key; the package makes a self-signed one for
+development.
+.TP
+.I /var/lib/keel-cloud/cloud.db
+the state.
+.SH SEE ALSO
+.BR keel-cloud (8),
+.BR keel-cloud-node (8)

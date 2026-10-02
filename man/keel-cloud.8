@@ -1,0 +1,43 @@
+.TH KEEL-CLOUD 8 "2026-10-02" "keel-cloud 0.1.0" "Keel Cloud"
+.SH NAME
+keel-cloud \- accounts, keys, sets and peers of a Keel Cloud instance
+.SH SYNOPSIS
+.B keel-cloud
+[\fB\-\-config\fR \fIFILE\fR] [\fB\-\-database\fR \fIFILE\fR]
+[\fB\-\-json\fR] \fINOUN\fR \fIVERB\fR ...
+.SH DESCRIPTION
+The command line of a Keel Cloud instance, run on the instance against
+the service's database. Started as root, it runs as the \fBkeel-cloud\fR
+user. A key is printed once, when it is made; only its hash is kept.
+.SH COMMANDS
+.TP
+.B account create \fIACCOUNT\fR
+make an account and print its first account key.
+.TP
+.B key create \fIACCOUNT\fR [\fB\-\-scope\fR enroll|account] [\fB\-\-label\fR \fITEXT\fR]
+make a key, an enrollment key by default, and print it.
+.TP
+.B key list \fIACCOUNT\fR
+the account's keys, never their values.
+.TP
+.B key revoke \fIACCOUNT\fR \fIID\fR
+revoke a key.
+.TP
+.B set list \fIACCOUNT\fR
+the account's sets.
+.TP
+.B set auto-admit \fIACCOUNT\fR \fISET\fR on|off
+admit new peers without the operator's confirmation, or stop.
+.TP
+.B peer list \fIACCOUNT\fR \fISET\fR
+the set's nodes and their state.
+.TP
+.B peer confirm \fIACCOUNT\fR \fISET\fR \fIPUBLIC_KEY\fR
+admit a pending node.
+.TP
+.B peer remove \fIACCOUNT\fR \fISET\fR \fIPUBLIC_KEY\fR
+forget a node; nodes that admitted it keep it until their operator
+removes it.
+.SH SEE ALSO
+.BR keel-cloud-api (8),
+.BR keel-cloud-node (8)

@@ -1,0 +1,43 @@
+.TH KEEL-CLOUD-NODE 8 "2026-10-02" "keel-cloud 0.1.0" "Keel Cloud"
+.SH NAME
+keel-cloud-node \- this node's side of Keel Cloud
+.SH SYNOPSIS
+.B keel-cloud-node
+[\fB\-\-spec\fR \fIFILE\fR] [\fB\-\-state\-dir\fR \fIDIR\fR] \fIACTION\fR ...
+.br
+.B keel cloud
+\fIACTION\fR ...
+.SH DESCRIPTION
+Reads the \fBcloud\fR section of the instance spec, registers this node in
+its set with a proof built from the set's entry secret, checks the proofs
+of the other nodes, and writes the peers the operator confirmed into the
+spec's \fBnetwork.overlay.wireguard.peers\fR. It never writes WireGuard's
+configuration: \fBkeel spec apply \-\-system\fR converges the spec, under the
+confirmation window of \fBkeel network confirm\fR.
+.PP
+Admitted peers are pinned per set in \fI/var/lib/keel-cloud-node\fR: Keel
+Cloud can bring a newer endpoint for a pinned key, never replace the key,
+change its addresses or remove it.
+.SH ACTIONS
+.TP
+.B entry-secret
+print the set's entry secret, making it when its file does not exist.
+.TP
+.B enroll \fR[\fB\-\-endpoint\fR \fIHOST:PORT\fR]
+register this node, or bring its record up to date.
+.TP
+.B sync \fR[\fB\-\-wait\fR \fISECONDS\fR] [\fB\-\-since\fR \fIREVISION\fR]
+admit what the set proposes and write the pinned peers into the spec.
+.TP
+.B confirm \fIPUBLIC_KEY\fR \fB\-\-account\-key\-file\fR \fIFILE\fR
+admit a pending node, with the account key.
+.TP
+.B status
+the set as Keel Cloud and this node see it.
+.TP
+.B run
+enroll, then long poll for changes; the \fBkeel-cloud-node.service\fR
+unit, installed disabled.
+.SH SEE ALSO
+.BR keel (8),
+.BR keel-cloud (8)

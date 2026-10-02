@@ -1,0 +1,47 @@
+# The three packages of debian/ (handbook decision 0039): built, source
+# and binary, with dpkg-buildpackage and linted with lintian, any error or
+# warning failing, on trixie, the release they are for. Then
+# tests/package-smoke.sh installs python3-keel-cloud and keel-cloud-api in
+# the same container, whose systemd runs, and checks the service: its own
+# user, [::]:8443, TLS only. The check is "build / trixie".
+#
+# keel-overlay-cloud is built and linted here but not installed: it
+# depends on keel, which is in the Keel repository and not in Debian. The
+# whole path, two nodes and the service, is the real test of README.md.
+#
+# Nothing is published here: publishing is the maintainer's attended
+# release (Keel-Linux/apt). The job runs in a Debian trixie system
+# container on the self-hosted runner through lxc-trixie.yml, as every
+# Keel package does; no application containers.
+name: packages
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: keel-linux/.github/.github/workflows/lxc-trixie.yml@main
+    with:
+      timeout: 20
+      systemd: true
+      artifact-dir: dist
+      artifact-name: keel-cloud-debs
+      run: |
+        apt-get update -qq
+        apt-get install -y -qq --no-install-recommends \
+          ca-certificates curl build-essential debhelper dh-python \
+          pybuild-plugin-pyproject python3-all python3-setuptools lintian
+        work="$(mktemp -d)"
+        cp -a . "$work/src"
+        rm -rf "$work/src/.git"
+        (cd "$work/src" && dpkg-buildpackage -us -uc)
+        lintian --fail-on error,warning --info --display-info \
+          "$work"/keel-cloud_*.changes
+        mkdir -p dist
+        cp "$work"/*.deb "$work"/*.dsc "$work"/*.tar.* "$work"/*.changes dist/
+        bash tests/package-smoke.sh dist

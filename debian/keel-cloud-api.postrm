@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+
+# Purge removes the certificate the package made and the service's
+# state: accounts, key hashes and node records.
+if [ "$1" = "purge" ]; then
+    rm -rf /etc/keel-cloud/tls /var/lib/keel-cloud
+fi
+
+#DEBHELPER#
+
+exit 0

@@ -1,0 +1,14 @@
+keel-cloud (0.1.0) unstable; urgency=medium
+
+  * Phase A of handbook decision 0046: the API service, membership and
+    WireGuard key exchange for the nodes of a set.
+  * keel-cloud-api: TLS only on [::]:8443, its own system user, SQLite
+    storing the hashes of API keys only; an account key and a narrower
+    enrollment key; registration with an entry secret proof the service
+    relays but cannot make; operator confirmation of new peers; long
+    polling for changes.
+  * keel-overlay-cloud: keel-cloud-node, which checks the proofs, pins
+    admitted peers per set and writes them into the spec's WireGuard
+    overlay for keel apply to converge.
+
+ -- KeelLinux maintainers <admin@keellinux.org>  Fri, 02 Oct 2026 12:00:00 +0000

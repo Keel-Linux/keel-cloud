@@ -1,0 +1,30 @@
+#!/bin/sh
+# make-dev-certificate [NAME [ADDRESS...]]
+#
+# A self-signed certificate for a development instance of Keel Cloud, in
+# /etc/keel-cloud/tls: an ECDSA P-256 key readable by the keel-cloud group
+# only, and a certificate for NAME (default: this machine's name) and each
+# ADDRESS. Nodes trust it through cloud.ca_file in their spec. A production
+# instance uses a certificate from ACME instead (README.md, "TLS").
+set -eu
+
+dir=/etc/keel-cloud/tls
+name=${1:-$(hostname -f 2>/dev/null || hostname)}
+[ $# -gt 0 ] && shift
+san="DNS:$name"
+for address in "$@"; do
+    san="$san,IP:$address"
+done
+
+umask 077
+mkdir -p "$dir"
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+    -days 397 -subj "/CN=$name" -addext "subjectAltName=$san" \
+    -keyout "$dir/key.pem.new" -out "$dir/cert.pem.new" 2>/dev/null
+chgrp keel-cloud "$dir/key.pem.new"
+chmod 0640 "$dir/key.pem.new"
+chmod 0644 "$dir/cert.pem.new"
+chmod 0755 "$dir"
+mv "$dir/key.pem.new" "$dir/key.pem"
+mv "$dir/cert.pem.new" "$dir/cert.pem"
+echo "make-dev-certificate: $dir/cert.pem for $san"
